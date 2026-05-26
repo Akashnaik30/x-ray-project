@@ -339,6 +339,7 @@ def analyze():
         if not ext:
             ext = '.jpg'
         filename = f"{scan_id}{ext}"
+        web_filename = filename
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
@@ -381,6 +382,11 @@ def analyze():
             else:
                 img = Image.fromarray(img_array).convert('RGB')
             logger.info(f"DICOM loaded! Patient ID: {patient_id}, Name: {patient_name}")
+
+            # Export standard web-compatible PNG of the DICOM image
+            web_filename = f"{scan_id}.png"
+            web_filepath = os.path.join(app.config['UPLOAD_FOLDER'], web_filename)
+            img.save(web_filepath)
         else:
             # Normal JPG/PNG
             img = Image.open(filepath)
@@ -514,7 +520,7 @@ def analyze():
             "patient_gender": patient_gender,
             "referred_by": referred_by,
             "timestamp": scan_time,
-            "original_image_url": f"/uploads/{filename}",
+            "original_image_url": f"/uploads/{web_filename}",
             "heatmap_image_url": f"/uploads/{heatmap_filename}",
             "metrics": {
                 "cardiomegaly": cardiomegaly_prob,

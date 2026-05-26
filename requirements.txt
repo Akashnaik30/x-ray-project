@@ -9,6 +9,9 @@ flask-wtf
 flask-limiter
 python-dotenv
 pydicom
+pylibjpeg
+pylibjpeg-libjpeg
+pylibjpeg-openjpeg
 numpy
 pillow
 gunicorn

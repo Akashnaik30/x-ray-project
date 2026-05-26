@@ -556,8 +556,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 patient_gender: pGender || "F",
                 referred_by: pReferred || "Dr. Self-Referral",
                 timestamp: new Date().toLocaleString(),
-                original_image_url: e.target.result,
-                heatmap_image_url: e.target.result, // Use self as heatmap fallback representation
+                original_image_url: file.name.toLowerCase().endsWith('.dcm') ? MOCK_PAGES.normal.image : e.target.result,
+                heatmap_image_url: file.name.toLowerCase().endsWith('.dcm') ? MOCK_PAGES.normal.image : e.target.result,
                 dominant_finding: mockType === 'normal' ? 'Normal/No Findings' : (mockType === 'pneumonia' ? 'Pneumonia/Consolidation' : 'Cardiomegaly (Enlarged Heart)'),
                 dominant_score: mockType === 'normal' ? 88.5 : (mockType === 'pneumonia' ? 76.2 : 91.4),
                 metrics: {
