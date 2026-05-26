@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+flask
+flask-sqlalchemy
+flask-bcrypt
+flask-login
+flask-wtf
+flask-limiter
+python-dotenv
+pydicom
+numpy
+pillow
+gunicorn

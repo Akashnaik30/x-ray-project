@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PACS Workstation v4.2 | Chest X-Ray AI Analysis Console</title>
+    <!-- CSRF Token Meta Tag for AJAX -->
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <!-- Google Fonts for crisp, medical-workstation interface -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Outfit:wght@300;400;500;700;800&display=swap"
+        rel="stylesheet">
+    <!-- FontAwesome for medical & workstation iconography -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Main Style Sheet -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body class="pacs-workstation">
+
+    <!-- Screen Shield Grid (workstation scan lines & grid matrix) -->
+    <div class="screen-grid"></div>
+
+    <!-- MAIN WORKSTATION PORTAL -->
+    <div id="main-console" class="console-grid">
+
+        <!-- HEADER: Hospital PACS Header -->
+        <header class="workstation-header">
+            <div class="header-branding">
+                <div class="glow-indicator pulses"></div>
+                <h1>METROPOLIS ADVANCED IMAGING LABS</h1>
+                <span class="divider">|</span>
+                <span class="system-mode">PACS CONSOLE v4.2 // SECURE NEURAL OVERLAY</span>
+            </div>
+
+            <!-- Workstation status indicators -->
+            <div class="header-metadata">
+                <div class="meta-item">
+                    <span class="label">AE TITLE:</span>
+                    <span class="val text-glow">METRO_CXR_AI</span>
+                </div>
+                <div class="meta-item">
+                    <span class="label">SCANNER IP:</span>
+                    <span class="val">192.168.12.85</span>
+                </div>
+                <div class="meta-item hidden-mobile">
+                    <span class="label">DEPT:</span>
+                    <span class="val">THORACIC PATHOLOGY</span>
+                </div>
+                <div class="meta-item">
+                    <span class="label">DOCTOR:</span>
+                    <span class="val text-glow" style="color: var(--accent-success);">{{ current_user.name }}</span>
+                </div>
+                <div class="meta-item">
+                    <a href="{{ url_for('auth.logout') }}" style="color: var(--accent-danger); text-decoration: none; font-weight: bold; border: 1px solid rgba(255, 74, 74, 0.3); padding: 2px 6px; border-radius: 3px; font-size: 10px;" title="Secure Log Out">
+                        <i class="fa-solid fa-power-off"></i> LOGOUT
+                    </a>
+                </div>
+                <div class="meta-item time-display">
+                    <span class="label">LOCAL TIME:</span>
+                    <span id="current-timestamp" class="val text-glow">---</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- CONTENT GRID: Left Sidebar, Main Viewer, Right Diagnosis -->
+        <main class="console-body">
+
+            <!-- LEFT PANEL: Console Control & Scan History -->
+            <section class="side-panel left-panel">
+                <!-- PANEL BOX 1: Upload & Loader Control -->
+                <div class="panel-section upload-control-section">
+                    <h2 class="section-title"><i class="fa-solid fa-cloud-arrow-up"></i> SCAN INGESTION</h2>
+
+                    <!-- Drag and Drop Box -->
+                    <div id="drop-zone" class="drop-zone">
+                        <input type="file" id="image-upload" accept="image/*" class="file-input-hidden">
+                        <div class="drop-content">
+                            <i class="fa-solid fa-radiation drop-icon"></i>
+                            <p class="drop-text">Drag & Drop Chest X-Ray DICOM/PNG/JPG</p>
+                            <span class="drop-subtext">Supports JPG, PNG, DICOM (.dcm)</span>
+                        </div>
+
+                        <!-- Overlay loading bar -->
+                        <div id="scanning-overlay" class="scanning-overlay hidden">
+                            <div class="laser-beam"></div>
+                            <div class="scanner-grid"></div>
+                            <div class="loader-content">
+                                <i class="fa-solid fa-microchip spinner-neural"></i>
+                                <span class="scanning-status">MODEL INFERENCE ACTIVE...</span>
+                                <div class="progress-container">
+                                    <div class="progress-bar" id="load-progress"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Sample Selector -->
+                    <div class="samples-selector">
+                        <span class="label">LOAD DEMO SCANS:</span>
+                        <div class="sample-grid">
+                            <button class="sample-btn" data-sample="normal" title="Normal Chest X-Ray">
+                                <i class="fa-solid fa-lungs"></i> Normal
+                            </button>
+                            <button class="sample-btn" data-sample="pneumonia" title="Pneumonia Infiltration">
+                                <i class="fa-solid fa-virus-covid"></i> Pneumonia
+                            </button>
+                            <button class="sample-btn" data-sample="cardiomegaly" title="Cardiomegaly (Enlarged Heart)">
+                                <i class="fa-solid fa-heart-pulse"></i> Cardiomegaly
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PANEL BOX 2: Patient Demographics Editor -->
+                <div class="panel-section demographics-section">
+                    <h2 class="section-title"><i class="fa-solid fa-id-card"></i> PATIENT DEMOGRAPHICS</h2>
+                    <form id="demographics-form" class="demographics-grid">
+                        <div class="input-group">
+                            <label for="patient-id">PATIENT ID</label>
+                            <input type="text" id="patient-id" class="input-glow" placeholder="AUTO-GEN">
+                        </div>
+                        <div class="input-group">
+                            <label for="patient-name">PATIENT NAME</label>
+                            <input type="text" id="patient-name" class="input-glow" placeholder="e.g. John Doe">
+                        </div>
+                        <div class="grid-2-col">
+                            <div class="input-group">
+                                <label for="patient-age">AGE</label>
+                                <input type="number" id="patient-age" class="input-glow" placeholder="e.g. 45">
+                            </div>
+                            <div class="input-group">
+                                <label for="patient-gender">GENDER</label>
+                                <select id="patient-gender" class="input-glow">
+                                    <option value="M">M</option>
+                                    <option value="F">F</option>
+                                    <option value="O">Other</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label for="referred-by">REFERRING CLINICIAN</label>
+                            <input type="text" id="referred-by" class="input-glow" value="Dr. {{ current_user.name }}">
+                        </div>
+                    </form>
+                </div>
+
+                <!-- PANEL BOX 3: Historical Audit Ledger (SQLite Relational Multi-Tenant) -->
+                <div class="panel-section history-section flex-grow">
+                    <h2 class="section-title"><i class="fa-solid fa-clock-rotate-left"></i> HISTORICAL AUDIT LEDGER</h2>
+                    
+                    <!-- Search input -->
+                    <div class="ledger-search-box">
+                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                        <input type="text" id="ledger-search-input" placeholder="Search Patient Name / ID..." autocomplete="off">
+                    </div>
+
+                    <div id="history-container" class="history-list scrollbar-custom">
+                        <div class="empty-history">
+                            <i class="fa-solid fa-folder-open"></i>
+                            <p>No scans found in database.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- CENTER PANEL: Primary PACS Workstation Viewer -->
+            <section class="center-viewport">
+                <div class="viewer-container">
+
+                    <!-- Viewer Header (Patient Info Display) -->
+                    <div class="viewer-header-overlay">
+                        <div class="patient-id-badge text-glow" id="active-patient-id">ID: ---</div>
+                        <div class="patient-name-badge" id="active-patient-name">NAME: UNASSIGNED</div>
+                        <div class="anatomy-marker text-glow">R</div>
+                    </div>
+
+                    <!-- Canvas Viewport with Crosshairs -->
+                    <div class="canvas-viewport" id="viewport-frame">
+                        <canvas id="pacs-canvas"></canvas>
+
+                        <!-- Workstation Reference Lines -->
+                        <div class="pacs-crosshair vertical" id="crosshair-v"></div>
+                        <div class="pacs-crosshair horizontal" id="crosshair-h"></div>
+                        <div class="pacs-grid-matrix" id="grid-overlay-matrix"></div>
+
+                        <!-- Dynamic Ruler Measurement Indicator -->
+                        <div class="ruler-info-bubble hidden" id="ruler-bubble">
+                            <span id="ruler-measurement">0.0 mm</span>
+                        </div>
+                    </div>
+
+                    <!-- Canvas Interactive Toolbar -->
+                    <div class="viewer-toolbar">
+                        <div class="toolbar-group">
+                            <button class="tool-btn" id="btn-pan" title="Pan / Zoom Mode (Left-Click Drag)">
+                                <i class="fa-solid fa-up-down-left-right"></i> <span>PAN/ZOOM</span>
+                            </button>
+                            <button class="tool-btn" id="btn-measure"
+                                title="Ruler Measurement Mode (Click-Drag to measure)">
+                                <i class="fa-solid fa-ruler"></i> <span>MEASURE</span>
+                            </button>
+                        </div>
+
+                        <div class="toolbar-group">
+                            <div class="slider-control" title="Adjust Image Brightness">
+                                <i class="fa-solid fa-sun"></i>
+                                <input type="range" id="slider-brightness" min="0.5" max="2.0" step="0.05" value="1.0">
+                                <span class="slider-val" id="val-brightness">100%</span>
+                            </div>
+                            <div class="slider-control" title="Adjust Image Contrast">
+                                <i class="fa-solid fa-circle-half-stroke"></i>
+                                <input type="range" id="slider-contrast" min="0.5" max="2.5" step="0.05" value="1.0">
+                                <span class="slider-val" id="val-contrast">100%</span>
+                            </div>
+                        </div>
+
+                        <div class="toolbar-group">
+                            <button class="tool-btn" id="btn-invert" title="Toggle Film Negative Inversion">
+                                <i class="fa-solid fa-circle-notch"></i> <span>INVERT</span>
+                            </button>
+                            <button class="tool-btn" id="btn-grid" title="Toggle Grid Overlay">
+                                <i class="fa-solid fa-border-all"></i> <span>GRID</span>
+                            </button>
+                            <button class="tool-btn" id="btn-crosshairs" title="Toggle Center Crosshair Grid">
+                                <i class="fa-solid fa-crosshairs"></i> <span>CROSS</span>
+                            </button>
+                        </div>
+
+                        <div class="toolbar-group">
+                            <div class="slider-control slider-overlay" title="AI Attention Map Opacity (Blend)">
+                                <i class="fa-solid fa-eye-slash"></i>
+                                <input type="range" id="slider-heatmap" min="0" max="100" value="0">
+                                <i class="fa-solid fa-eye text-glow"></i>
+                                <span class="slider-val" id="val-heatmap">0%</span>
+                            </div>
+                            <button class="tool-btn" id="btn-reset" title="Reset Filters & Zoom">
+                                <i class="fa-solid fa-rotate-left"></i> <span>RESET</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RIGHT PANEL: AI Diagnostics & Radiological Impression -->
+            <section class="side-panel right-panel">
+
+                <!-- PANEL BOX 1: AI Diagnostics Progress Indicators -->
+                <div class="panel-section diagnostics-panel-section">
+                    <h2 class="section-title"><i class="fa-solid fa-brain"></i> DEEP LEARNING PROBABILITIES</h2>
+                    <div class="diagnostics-bars">
+                        <!-- Normal Bar -->
+                        <div class="diag-bar-group" data-key="normal">
+                            <div class="bar-header">
+                                <span class="label">NORMAL (No active findings)</span>
+                                <span class="percentage text-glow" id="prob-normal">--%</span>
+                            </div>
+                            <div class="bar-track">
+                                <div class="bar-fill fill-normal" id="fill-normal" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Pneumonia Bar -->
+                        <div class="diag-bar-group" data-key="pneumonia">
+                            <div class="bar-header">
+                                <span class="label">PNEUMONIA / INFILTRATION</span>
+                                <span class="percentage text-glow text-danger" id="prob-pneumonia">--%</span>
+                            </div>
+                            <div class="bar-track">
+                                <div class="bar-fill fill-danger" id="fill-pneumonia" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Cardiomegaly Bar -->
+                        <div class="diag-bar-group" data-key="cardiomegaly">
+                            <div class="bar-header">
+                                <span class="label">CARDIOMEGALY (Enlarged Heart)</span>
+                                <span class="percentage text-glow text-warning" id="prob-cardiomegaly">--%</span>
+                            </div>
+                            <div class="bar-track">
+                                <div class="bar-fill fill-warning" id="fill-cardiomegaly" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Pleural Effusion Bar -->
+                        <div class="diag-bar-group" data-key="effusion">
+                            <div class="bar-header">
+                                <span class="label">PLEURAL EFFUSION</span>
+                                <span class="percentage text-glow text-warning" id="prob-effusion">--%</span>
+                            </div>
+                            <div class="bar-track">
+                                <div class="bar-fill fill-warning" id="fill-effusion" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Pneumothorax Bar -->
+                        <div class="diag-bar-group" data-key="pneumothorax">
+                            <div class="bar-header">
+                                <span class="label">PNEUMOTHORAX</span>
+                                <span class="percentage text-glow text-danger" id="prob-pneumothorax">--%</span>
+                            </div>
+                            <div class="bar-track">
+                                <div class="bar-fill fill-danger" id="fill-pneumothorax" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PANEL BOX 2: Anatomical Metrics (Heuristics) -->
+                <div class="panel-section metrics-panel-section">
+                    <h2 class="section-title"><i class="fa-solid fa-chart-line"></i> ANATOMICAL EXTRACTOR METRICS</h2>
+                    <div class="metrics-grid">
+                        <div class="metric-box" title="Cardiothoracic Ratio. Values > 0.50 indicate cardiomegaly.">
+                            <span class="m-label">EST. CTR (Cardio Ratio)</span>
+                            <span class="m-val" id="metric-ctr">--</span>
+                            <span class="m-status text-glow" id="status-ctr">Normal</span>
+                        </div>
+                        <div class="metric-box"
+                            title="Measures pixel density in middle lung zones. Brightness increases with opacity.">
+                            <span class="m-label">LUNG INFILTRATION INDEX</span>
+                            <span class="m-val" id="metric-opacity">--</span>
+                            <span class="m-status" id="status-opacity">Clear</span>
+                        </div>
+                        <div class="metric-box" title="Costophrenic Angle Opacity. Blunted angles indicate fluid.">
+                            <span class="m-label">FLUID RECESS DENSITY</span>
+                            <span class="m-val" id="metric-costo">--</span>
+                            <span class="m-status" id="status-costo">Clear</span>
+                        </div>
+                        <div class="metric-box"
+                            title="Apical flatness index. High value indicates abnormal uniform air pockets.">
+                            <span class="m-label">APICAL AIR COEFFICIENT</span>
+                            <span class="m-val" id="metric-apical">--</span>
+                            <span class="m-status" id="status-apical">Normal</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PANEL BOX 3: Radiological Narrative -->
+                <div class="panel-section impression-panel-section flex-grow">
+                    <h2 class="section-title"><i class="fa-solid fa-receipt"></i> CLINICAL IMPRESSION REPORT</h2>
+                    <div class="impression-box scrollbar-custom">
+                        <div class="narrative-meta">
+                            <div><strong>STATUS:</strong> <span class="badge" id="dominant-badge">NO REPORT
+                                    LOADED</span></div>
+                            <div><strong>SCAN TIME:</strong> <span id="report-time">--</span></div>
+                        </div>
+                        <div class="findings-narrative" id="findings-text">
+                            <p class="empty-note">Please load or upload an X-ray to generate deep learning findings and
+                                clinical commentary.</p>
+                        </div>
+
+                        <!-- Disclaimer -->
+                        <div class="clinical-disclaimer">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span><strong>DEMO ONLY:</strong> Not for actual diagnostic or clinical use.</span>
+                        </div>
+                    </div>
+
+                    <!-- PDF Report Button -->
+                    <div class="report-actions">
+                        <button class="btn-primary" id="btn-export-report" disabled>
+                            <i class="fa-solid fa-file-pdf"></i> GENERATE RADIOLOGY REPORT
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- PRINT VIEWPORT: Secret page structured for PDF printer -->
+    <div id="print-report-template" class="print-report">
+        <div class="print-header">
+            <div class="hospital-info">
+                <h1>METROPOLIS ADVANCED IMAGING LABS</h1>
+                <p>Department of Thoracic Radiology & AI Assisted Diagnostics</p>
+                <p>Tel: (555) 019-9400 | Fax: (555) 019-9401</p>
+            </div>
+            <div class="report-title-badge">
+                <h2>CLINICAL RADIOLOGY REPORT</h2>
+                <div class="sub">AI Diagnostic Ingestion Support</div>
+            </div>
+        </div>
+
+        <div class="print-divider"></div>
+
+        <div class="print-section">
+            <h3 class="print-sec-title">1. PATIENT DEMOGRAPHICS & STUDY METADATA</h3>
+            <table class="demographics-table">
+                <tr>
+                    <td><strong>PATIENT ID:</strong></td>
+                    <td id="p-id">---</td>
+                    <td><strong>STUDY DATE & TIME:</strong></td>
+                    <td id="p-time">---</td>
+                </tr>
+                <tr>
+                    <td><strong>PATIENT NAME:</strong></td>
+                    <td id="p-name">---</td>
+                    <td><strong>MODALITY:</strong></td>
+                    <td>Chest Radiography (CXR - PA/AP)</td>
+                </tr>
+                <tr>
+                    <td><strong>AGE / GENDER:</strong></td>
+                    <td id="p-age-gender">---</td>
+                    <td><strong>REFERRING CLINICIAN:</strong></td>
+                    <td id="p-referred">---</td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="print-section">
+            <h3 class="print-sec-title">2. IMAGING VIEWS & COMPLETED SCANS</h3>
+            <div class="print-images-grid">
+                <div class="print-img-box">
+                    <img id="print-original-img" src="" alt="Original CXR">
+                    <span>Fig A: Original Chest Radiograph</span>
+                </div>
+                <div class="print-img-box">
+                    <img id="print-heatmap-img" src="" alt="AI Heatmap">
+                    <span>Fig B: AI Spatial Feature Attention Map</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="print-section">
+            <h3 class="print-sec-title">3. NEURAL NETWORK PROBABILITIES</h3>
+            <table class="findings-table">
+                <thead>
+                    <tr>
+                        <th style="width: 60%">INDICATED FINDING</th>
+                        <th style="width: 20%; text-align: center;">ESTIMATED PROBABILITY</th>
+                        <th style="width: 20%; text-align: right;">STATUS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Normal / No Significant active pathology</td>
+                        <td class="center" id="p-prob-normal">--%</td>
+                        <td class="right" id="p-status-normal">--</td>
+                    </tr>
+                    <tr>
+                        <td>Pneumonia / Lobar Infiltration</td>
+                        <td class="center" id="p-prob-pneumonia">--%</td>
+                        <td class="right text-bold" id="p-status-pneumonia">--</td>
+                    </tr>
+                    <tr>
+                        <td>Cardiomegaly (Enlarged Cardiac Silhouette)</td>
+                        <td class="center" id="p-prob-cardiomegaly">--%</td>
+                        <td class="right text-bold" id="p-status-cardiomegaly">--</td>
+                    </tr>
+                    <tr>
+                        <td>Pleural Effusion (Fluid Blunting Recesses)</td>
+                        <td class="center" id="p-prob-effusion">--%</td>
+                        <td class="right text-bold" id="p-status-effusion">--</td>
+                    </tr>
+                    <tr>
+                        <td>Pneumothorax (Apical Pleural Air Layer)</td>
+                        <td class="center" id="p-prob-pneumothorax">--%</td>
+                        <td class="right text-bold" id="p-status-pneumothorax">--</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="print-section">
+            <h3 class="print-sec-title">4. DETECTED STRUCTURAL MEASUREMENTS</h3>
+            <div class="print-metrics">
+                <div class="print-metric-item">
+                    <strong>Cardiothoracic Ratio (CTR):</strong> <span id="p-metric-ctr">--</span> (Standard Reference:
+                    &lt; 0.50)
+                </div>
+                <div class="print-metric-item">
+                    <strong>Mid-Lung Density Opacity:</strong> <span id="p-metric-opacity">--</span> (Clear Lung
+                    Reference: &lt; 0.35)
+                </div>
+                <div class="print-metric-item">
+                    <strong>Fluid Costophrenic Density:</strong> <span id="p-metric-costo">--</span> (Clear Angle
+                    Reference: &lt; 0.40)
+                </div>
+            </div>
+        </div>
+
+        <div class="print-section">
+            <h3 class="print-sec-title">5. RADIOLOGICAL FINDINGS & CLINICAL IMPRESSIONS</h3>
+            <div class="print-narrative-container" id="p-findings-narrative">
+                <!-- Injected findings -->
+            </div>
+        </div>
+
+        <div class="print-footer-signature">
+            <div class="disclaimer-text">
+                <strong>CLINICAL DISCLAIMER:</strong> This report is automatically generated using a Deep Learning
+                DenseNet-121 architecture and computer-vision algorithms. This is for research and demonstration
+                purposes only. It is not approved for actual clinical decision-making or diagnosis.
+            </div>
+            <div class="signature-line">
+                <p>Report Compiled Electronically by:</p>
+                <div class="sig-placeholder">METRO_CXR_AI // SECURE DIGITAL SIGN-OFF</div>
+                <p>Date Generated: <span id="p-sig-date">--</span></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- PACS Workstation Controller Script -->
+    <script>
+        // Store globally readable mock patient records for the "Demo Scans" to bypass actual server uploads when testing
+        // Standard high-quality online samples can be injected, but we'll fall back to backend or client simulation if backend is unavailable.
+        const MOCK_PAGES = {
+            normal: {
+                patient_name: "Eleanor Vance",
+                patient_age: "34",
+                patient_gender: "F",
+                referred_by: "Dr. L. Crane",
+                image: "/static/samples/normal.png"
+            },
+            pneumonia: {
+                patient_name: "Gordon Cole",
+                patient_age: "62",
+                patient_gender: "M",
+                referred_by: "Dr. A. Cooper",
+                image: "/static/samples/pneumonia.png"
+            },
+            cardiomegaly: {
+                patient_name: "Arthur Pendelton",
+                patient_age: "78",
+                patient_gender: "M",
+                referred_by: "Dr. G. Adams",
+                image: "/static/samples/cardiomegaly.png"
+            }
+        };
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+
+</html>

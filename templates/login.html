@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PACS Workstation v4.2 | Ingress Ingestion Portal</title>
+    <!-- Google Fonts for crisp, medical-workstation interface -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Outfit:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for medical & workstation iconography -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Main Style Sheet -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .auth-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: calc(100vh - 48px);
+            width: 100vw;
+            background-color: var(--bg-darkest);
+            position: relative;
+            z-index: 10;
+        }
+
+        .auth-card {
+            background-color: var(--bg-panel);
+            border: 1px solid var(--border-dim);
+            border-top: 3px solid var(--accent-cyan);
+            border-radius: 6px;
+            width: 420px;
+            padding: 30px;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            position: relative;
+        }
+
+        .auth-card::before, .auth-card::after {
+            content: '';
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            pointer-events: none;
+            opacity: 0.4;
+        }
+
+        .auth-card::before {
+            top: 10px;
+            left: 10px;
+            border-top: 2px solid var(--text-primary);
+            border-left: 2px solid var(--text-primary);
+        }
+
+        .auth-card::after {
+            bottom: 10px;
+            right: 10px;
+            border-bottom: 2px solid var(--text-primary);
+            border-right: 2px solid var(--text-primary);
+        }
+
+        .auth-title {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .auth-title i {
+            font-size: 40px;
+            color: var(--accent-cyan);
+            text-shadow: var(--glow-cyan);
+            margin-bottom: 6px;
+            animation: pulse-glow 2s infinite ease-in-out;
+        }
+
+        .auth-title h2 {
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--text-primary);
+        }
+
+        .auth-title .sub {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .auth-form .btn-primary {
+            height: 38px;
+            font-size: 11px;
+            letter-spacing: 1px;
+        }
+
+        .auth-footer {
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .auth-footer a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+            font-weight: 500;
+            transition: text-shadow 0.2s ease;
+        }
+
+        .auth-footer a:hover {
+            text-shadow: var(--glow-cyan);
+        }
+
+        /* Alert/Flash Styling */
+        .flash-messages {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .flash-alert {
+            font-size: 11px;
+            padding: 10px 12px;
+            border-radius: 4px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            font-family: var(--font-mono);
+        }
+
+        .flash-alert.danger {
+            background-color: rgba(255, 74, 74, 0.08);
+            border: 1px solid rgba(255, 74, 74, 0.3);
+            color: var(--accent-danger);
+        }
+
+        .flash-alert.success {
+            background-color: rgba(59, 232, 133, 0.08);
+            border: 1px solid rgba(59, 232, 133, 0.3);
+            color: var(--accent-success);
+        }
+    </style>
+</head>
+<body class="pacs-workstation">
+
+    <div class="screen-grid"></div>
+
+    <div class="console-grid">
+        <!-- HEADER -->
+        <header class="workstation-header">
+            <div class="header-branding">
+                <div class="glow-indicator pulses"></div>
+                <h1>METROPOLIS ADVANCED IMAGING LABS</h1>
+                <span class="divider">|</span>
+                <span class="system-mode">SECURE GATEWAY INGRESS</span>
+            </div>
+            <div class="header-metadata">
+                <div class="meta-item">
+                    <span class="label">AE TITLE:</span>
+                    <span class="val text-glow">METRO_CXR_AI</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- CONTAINER -->
+        <div class="auth-container">
+            <div class="auth-card">
+                <div class="auth-title">
+                    <i class="fa-solid fa-shield-halved"></i>
+                    <h2>PACS STATION INGRESS</h2>
+                    <span class="sub">Clinical Authorization Protocol</span>
+                </div>
+
+                <!-- Flash messages -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                  {% if messages %}
+                    <div class="flash-messages">
+                      {% for category, message in messages %}
+                        <div class="flash-alert {{ category }}">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span>{{ message }}</span>
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                {% endwith %}
+
+                <form class="auth-form" method="POST" action="{{ url_for('auth.login') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <div class="input-group">
+                        <label for="email">CLINICAL EMAIL</label>
+                        <input type="email" id="email" name="email" class="input-glow" placeholder="e.g. physician@hospital.org" required>
+                    </div>
+
+                    <div class="input-group">
+                        <label for="password">PACS SECURITY PASSCODE</label>
+                        <input type="password" id="password" name="password" class="input-glow" placeholder="••••••••" required>
+                    </div>
+
+                    <button type="submit" class="btn-primary">
+                        <i class="fa-solid fa-key"></i> INGRESS ACCESS
+                    </button>
+                </form>
+
+                <div class="auth-footer">
+                    <span>Clinical Access Required?</span>
+                    <a href="{{ url_for('auth.register') }}">Register Workstation License</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>

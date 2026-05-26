@@ -1,0 +1,17 @@
+# Python Environment & Cache
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local Database & Secrets
+instance/
+*.db
+.env
+
+# Uploaded Clinical Imagery & Heatmaps
+uploads/
+model/xray_model.pth
