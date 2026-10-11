@@ -39,6 +39,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Current diagnostic scan details
     let activeScanData = null;
+    let showBoundingBox = true;
+    let activeBbox = null;
+    let progressTimer = null;
+    let inferenceAbortController = null;
+    let toastTimeout = null;
 
     // ---------------------------------------------------------
     // DOM Element Selectors
@@ -51,6 +56,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('image-upload');
     const scanningOverlay = document.getElementById('scanning-overlay');
     const loadProgressBar = document.getElementById('load-progress');
+    const loadProgressPct = document.getElementById('load-progress-pct');
+    const loadElapsedTime = document.getElementById('load-elapsed-time');
+    const scanningStatusText = document.getElementById('scanning-status-text');
     
     // Viewport badge overlays
     const activePatientId = document.getElementById('active-patient-id');
@@ -63,6 +71,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnGrid = document.getElementById('btn-grid');
     const btnCrosshairs = document.getElementById('btn-crosshairs');
     const btnReset = document.getElementById('btn-reset');
+    const btnToggleHeatmap = document.getElementById('btn-toggle-heatmap');
+    const btnToggleBbox = document.getElementById('btn-toggle-bbox');
     
     const sliderBrightness = document.getElementById('slider-brightness');
     const sliderContrast = document.getElementById('slider-contrast');
@@ -74,6 +84,14 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const rulerBubble = document.getElementById('ruler-bubble');
     const rulerMeasurement = document.getElementById('ruler-measurement');
+    
+    // Toast & Multi-Label Alerts
+    const pacsToast = document.getElementById('pacs-toast');
+    const pacsToastTitle = document.getElementById('pacs-toast-title');
+    const pacsToastMsg = document.getElementById('pacs-toast-msg');
+    const pacsToastClose = document.getElementById('pacs-toast-close');
+    const multiLabelAlertBox = document.getElementById('multi-label-alert-box');
+    const multiLabelAlertText = document.getElementById('multi-label-alert-text');
     
     // Diagnostics Panel
     const probNormal = document.getElementById('prob-normal');
@@ -107,6 +125,28 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const demographicsForm = document.getElementById('demographics-form');
     const historyContainer = document.getElementById('history-container');
+
+    function showToast(title, msg, isWarning = true) {
+        if (!pacsToast) return;
+        if (pacsToastTitle) pacsToastTitle.innerText = title;
+        if (pacsToastMsg) pacsToastMsg.innerText = msg;
+        pacsToast.classList.remove('hidden');
+        if (isWarning) {
+            pacsToast.style.borderColor = 'var(--accent-orange, #f59e0b)';
+        } else {
+            pacsToast.style.borderColor = 'var(--accent-cyan, #00ffcc)';
+        }
+        clearTimeout(toastTimeout);
+        toastTimeout = setTimeout(() => {
+            pacsToast.classList.add('hidden');
+        }, 8000);
+    }
+
+    if (pacsToastClose) {
+        pacsToastClose.addEventListener('click', () => {
+            pacsToast.classList.add('hidden');
+        });
+    }
 
     // ---------------------------------------------------------
     // Startup & Window Resize
@@ -228,6 +268,59 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.globalAlpha = heatmapOpacity / 100;
             ctx.filter = 'none'; // Keeps colormap colors vibrant and unaffected by contrast filters
             ctx.drawImage(currentHeatmap, xCoord, yCoord, currentImage.width, currentImage.height);
+            ctx.restore();
+        }
+
+        // 4b. Draw Diagnostic ROI Bounding Box Overlay if enabled
+        if (showBoundingBox && activeBbox && isImageLoaded) {
+            ctx.save();
+            ctx.filter = 'none';
+            const boxColor = activeBbox.color || '#ef4444';
+            const bx = xCoord + activeBbox.x * currentImage.width;
+            const by = yCoord + activeBbox.y * currentImage.height;
+            const bw = activeBbox.w * currentImage.width;
+            const bh = activeBbox.h * currentImage.height;
+
+            // Semi-transparent highlight fill
+            ctx.fillStyle = boxColor === '#ef4444' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.08)';
+            ctx.fillRect(bx, by, bw, bh);
+
+            // Dashed medical border
+            ctx.strokeStyle = boxColor;
+            ctx.lineWidth = Math.max(2, 2 / scale);
+            ctx.setLineDash([6 / scale, 4 / scale]);
+            ctx.shadowColor = boxColor;
+            ctx.shadowBlur = 10;
+            ctx.strokeRect(bx, by, bw, bh);
+
+            // Solid corner reticles
+            ctx.setLineDash([]);
+            const cornerLen = Math.min(18 / scale, Math.min(bw, bh) * 0.25);
+            ctx.lineWidth = Math.max(3, 3 / scale);
+            // Top-left
+            ctx.beginPath();
+            ctx.moveTo(bx, by + cornerLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cornerLen, by);
+            // Top-right
+            ctx.moveTo(bx + bw - cornerLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cornerLen);
+            // Bottom-right
+            ctx.moveTo(bx + bw, by + bh - cornerLen); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw - cornerLen, by + bh);
+            // Bottom-left
+            ctx.moveTo(bx + cornerLen, by + bh); ctx.lineTo(bx, by + bh); ctx.lineTo(bx, by + bh - cornerLen);
+            ctx.stroke();
+
+            // Label tag badge
+            const tagText = `${activeBbox.label} (${activeBbox.confidence ? Math.round(activeBbox.confidence) + '%' : 'ROI'})`;
+            const fontSize = Math.max(11, 12 / scale);
+            ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
+            const textWidth = ctx.measureText(tagText).width;
+            const tagPadding = 4 / scale;
+            const tagHeight = fontSize + tagPadding * 2;
+            const tagY = Math.max(yCoord + 5, by - tagHeight - 2);
+
+            ctx.fillStyle = boxColor;
+            ctx.fillRect(bx, tagY, textWidth + tagPadding * 4, tagHeight);
+            ctx.fillStyle = '#0f172a';
+            ctx.fillText(tagText, bx + tagPadding * 2, tagY + fontSize);
             ctx.restore();
         }
         
@@ -387,6 +480,7 @@ document.addEventListener('DOMContentLoaded', () => {
         contrast = 1.0;
         isInverted = false;
         heatmapOpacity = 0;
+        showBoundingBox = true;
         
         sliderBrightness.value = 1.0;
         sliderContrast.value = 1.0;
@@ -397,6 +491,8 @@ document.addEventListener('DOMContentLoaded', () => {
         valHeatmap.innerText = "0%";
         
         btnInvert.classList.remove('active');
+        if (btnToggleHeatmap) btnToggleHeatmap.classList.remove('active');
+        if (btnToggleBbox) btnToggleBbox.classList.toggle('active-orange', !!activeBbox);
         
         fitImageToViewport();
     });
@@ -416,8 +512,31 @@ document.addEventListener('DOMContentLoaded', () => {
     sliderHeatmap.addEventListener('input', (e) => {
         heatmapOpacity = parseInt(e.target.value);
         valHeatmap.innerText = `${heatmapOpacity}%`;
+        if (btnToggleHeatmap) btnToggleHeatmap.classList.toggle('active', heatmapOpacity > 0);
         redrawCanvas();
     });
+
+    if (btnToggleHeatmap) {
+        btnToggleHeatmap.addEventListener('click', () => {
+            if (heatmapOpacity > 0) {
+                heatmapOpacity = 0;
+            } else {
+                heatmapOpacity = 50;
+            }
+            sliderHeatmap.value = heatmapOpacity;
+            valHeatmap.innerText = `${heatmapOpacity}%`;
+            btnToggleHeatmap.classList.toggle('active', heatmapOpacity > 0);
+            redrawCanvas();
+        });
+    }
+
+    if (btnToggleBbox) {
+        btnToggleBbox.addEventListener('click', () => {
+            showBoundingBox = !showBoundingBox;
+            btnToggleBbox.classList.toggle('active-orange', showBoundingBox && !!activeBbox);
+            redrawCanvas();
+        });
+    }
 
     // ---------------------------------------------------------
     // Image Ingestion & Ingress Control
@@ -464,28 +583,77 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function processFilePayload(file) {
+        if (!file) return;
+
+        // Abort previous running request if any
+        if (inferenceAbortController) {
+            inferenceAbortController.abort();
+        }
+        inferenceAbortController = new AbortController();
+
+        // Check for unsupported TCIA manifest files (.tcia is not an image)
+        if (file.name && file.name.toLowerCase().endsWith('.tcia')) {
+            showToast(
+                "Unsupported Manifest (.tcia)",
+                "The file '" + file.name + "' is a TCIA manifest text descriptor, not a radiographic image. In TCIA, please use the NBIA Data Retriever desktop application to download the actual .dcm scans, or upload JPG/PNG/DICOM studies.",
+                true
+            );
+            return;
+        }
+
         // Display loading animation
         scanningOverlay.classList.remove('hidden');
         loadProgressBar.style.width = "0%";
-        
-        // Simulated loading bar phase 1: loading file in memory
-        setTimeout(() => {
-            loadProgressBar.style.width = "40%";
-        }, 150);
+        if (loadProgressPct) loadProgressPct.innerText = "0%";
+        if (loadElapsedTime) loadElapsedTime.innerText = "0.0s";
+        if (scanningStatusText) scanningStatusText.innerText = "INGESTING IMAGE TENSORS...";
+
+        // Real-time progress ticker & stage updates
+        const startTime = Date.now();
+        let simProgress = 12;
+        clearInterval(progressTimer);
+        progressTimer = setInterval(() => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            if (loadElapsedTime) loadElapsedTime.innerText = `${elapsed}s`;
+
+            // Dynamic progress curve
+            if (simProgress < 40) simProgress += 8;
+            else if (simProgress < 75) simProgress += 4;
+            else if (simProgress < 92) simProgress += 1.5;
+            
+            const roundedPct = Math.min(95, Math.round(simProgress));
+            loadProgressBar.style.width = `${roundedPct}%`;
+            if (loadProgressPct) loadProgressPct.innerText = `${roundedPct}%`;
+
+            if (scanningStatusText) {
+                if (elapsed < 1.0) {
+                    scanningStatusText.innerText = "INGESTING IMAGE TENSORS...";
+                } else if (elapsed < 2.5) {
+                    scanningStatusText.innerText = "RUNNING DENSENET-121 INFERENCE...";
+                } else if (elapsed < 4.0) {
+                    scanningStatusText.innerText = "EXTRACTING STRUCTURAL ANATOMICAL METRICS...";
+                } else {
+                    scanningStatusText.innerText = "SYNTHESIZING MULTI-LABEL IMPRESSIONS...";
+                }
+            }
+        }, 120);
+
+        // 25s client-side timeout safety
+        const timeoutId = setTimeout(() => {
+            if (inferenceAbortController) {
+                inferenceAbortController.abort();
+            }
+        }, 25000);
 
         const formData = new FormData();
         formData.append('image', file);
 
-        // Fetch user edited demographics to attach where relevant
+        // User demographics
         const pId = document.getElementById('patient-id').value;
         const pName = document.getElementById('patient-name').value;
         const pAge = document.getElementById('patient-age').value;
         const pGender = document.getElementById('patient-gender').value;
         const pReferred = document.getElementById('referred-by').value;
-
-        setTimeout(() => {
-            loadProgressBar.style.width = "75%";
-        }, 400);
 
         const csrfTokenMeta = document.querySelector('meta[name="csrf-token"]');
         const csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute('content') : '';
@@ -493,41 +661,66 @@ document.addEventListener('DOMContentLoaded', () => {
         fetch('/analyze', {
             method: 'POST',
             body: formData,
+            signal: inferenceAbortController.signal,
             headers: {
                 'X-CSRFToken': csrfToken
             }
         })
         .then(response => {
+            clearTimeout(timeoutId);
             if (!response.ok) {
-                throw new Error("HTTP error on inference processing");
+                return response.json().then(errData => {
+                    throw errData;
+                }).catch(e => {
+                    if (e && e.error) throw e;
+                    throw new Error(`Server returned HTTP ${response.status}`);
+                });
             }
             return response.json();
         })
         .then(data => {
+            clearInterval(progressTimer);
             loadProgressBar.style.width = "100%";
+            if (loadProgressPct) loadProgressPct.innerText = "100%";
+            if (scanningStatusText) scanningStatusText.innerText = "DIAGNOSTIC PIPELINE COMPLETE";
+
             setTimeout(() => {
                 scanningOverlay.classList.add('hidden');
                 
-                // Override demographic fields if user input is empty/default
-                if (pId) data.patient_id = pId;
-                if (pName) data.patient_name = pName;
-                if (pAge) data.patient_age = pAge;
-                data.patient_gender = pGender;
-                data.referred_by = pReferred;
+                // Override demographic fields if user input provided
+                if (pId && !data.patient_id.startsWith("PAT-")) data.patient_id = pId;
+                if (pName && data.patient_name === 'Unknown') data.patient_name = pName;
+                if (pAge && data.patient_age === 'Unknown') data.patient_age = pAge;
+                if (pGender && data.patient_gender === 'O') data.patient_gender = pGender;
+                if (pReferred && data.referred_by === 'Dr. Self-Referral') data.referred_by = pReferred;
                 
                 renderScanResults(data);
-                
-                // Save to local session cache list
                 saveScanToCache(data);
-            }, 300);
+
+                if (data.close_margin_warning) {
+                    showToast("Close Margin Alert", "Multi-label co-occurrence detected between top predictions. Attending review advised.", true);
+                }
+            }, 250);
         })
         .catch(err => {
-            console.error("Inference Error:", err);
+            clearTimeout(timeoutId);
+            clearInterval(progressTimer);
             scanningOverlay.classList.add('hidden');
-            alert("Error running Deep Learning inference. Falling back to static client-side generator.");
-            
-            // Client-side fallback if server fails or model fails
-            generateClientMockDiagnosis(file, pId, pName, pAge, pGender, pReferred);
+            console.error("Inference Error:", err);
+
+            if (err.name === 'AbortError') {
+                showToast("Request Timeout", "Inference timed out after 25s without server response. Please verify network or retry.", true);
+                return;
+            }
+
+            const errTitle = err.error || "Inference Failed";
+            const errDetails = err.details || err.message || "Failed to complete AI processing of image file.";
+            showToast(errTitle, errDetails, true);
+
+            // Client-side fallback ONLY if file is an actual valid image format
+            if (file.type && file.type.startsWith('image/')) {
+                generateClientMockDiagnosis(file, pId, pName, pAge, pGender, pReferred);
+            }
         });
     }
 
@@ -648,10 +841,27 @@ document.addEventListener('DOMContentLoaded', () => {
         probPneumothorax.innerText = `${data.metrics.pneumothorax}%`;
         fillPneumothorax.style.width = `${data.metrics.pneumothorax}%`;
 
-        // Highlight dominant pathology group
+        // Set active bounding box for ROI overlay
+        activeBbox = data.bounding_box || null;
+        if (btnToggleBbox) btnToggleBbox.classList.toggle('active-orange', showBoundingBox && !!activeBbox);
+
+        // Multi-Label / Close Margin Alert Banner
+        if (multiLabelAlertBox && multiLabelAlertText) {
+            const warnText = data.close_margin_warning || data.multi_label_warning;
+            if (warnText) {
+                multiLabelAlertText.innerText = warnText;
+                multiLabelAlertBox.classList.remove('hidden');
+            } else {
+                multiLabelAlertBox.classList.add('hidden');
+            }
+        }
+
+        // Highlight dominant & secondary pathology groups
         document.querySelectorAll('.diag-bar-group').forEach(group => {
             group.classList.remove('dominant');
+            group.classList.remove('secondary-dominant');
         });
+
         let dominantKey = 'normal';
         if (data.dominant_finding.includes('Cardiomegaly')) dominantKey = 'cardiomegaly';
         else if (data.dominant_finding.includes('Pneumonia')) dominantKey = 'pneumonia';
@@ -660,6 +870,21 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const dominantGroup = document.querySelector(`.diag-bar-group[data-key="${dominantKey}"]`);
         if (dominantGroup) dominantGroup.classList.add('dominant');
+
+        // Secondary dominant bar highlight if multi-label or close margin
+        if (data.multi_label_findings && data.multi_label_findings.length > 1) {
+            const secFinding = data.multi_label_findings[1];
+            let secKey = '';
+            if (secFinding.includes('Cardiomegaly')) secKey = 'cardiomegaly';
+            else if (secFinding.includes('Pneumonia')) secKey = 'pneumonia';
+            else if (secFinding.includes('Effusion')) secKey = 'effusion';
+            else if (secFinding.includes('Pneumothorax')) secKey = 'pneumothorax';
+
+            if (secKey && secKey !== dominantKey) {
+                const secGroup = document.querySelector(`.diag-bar-group[data-key="${secKey}"]`);
+                if (secGroup) secGroup.classList.add('secondary-dominant');
+            }
+        }
 
         // Render metrics boxes
         metricCtr.innerText = data.heuristics.ctr.toFixed(2);
@@ -869,8 +1094,59 @@ document.addEventListener('DOMContentLoaded', () => {
     btnExportReport.addEventListener('click', () => {
         if (!activeScanData) return;
         
-        // Hide standard interface and launch print browser spool
-        window.print();
+        btnExportReport.setAttribute('disabled', 'true');
+        const origBtnText = btnExportReport.innerHTML;
+        btnExportReport.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> COMPILING CLINICAL PDF...';
+
+        // Render current PACS canvas frame to data URL for high-res PDF inclusion
+        let canvasDataUrl = null;
+        try {
+            canvasDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+        } catch (canvasErr) {
+            console.warn("Could not extract canvas data URL:", canvasErr);
+        }
+
+        const csrfTokenMeta = document.querySelector('meta[name="csrf-token"]');
+        const csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute('content') : '';
+
+        fetch('/export_report', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify({
+                scan_data: activeScanData,
+                canvas_image: canvasDataUrl
+            })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Export failed with HTTP ${response.status}`);
+            }
+            return response.blob();
+        })
+        .then(blob => {
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            const patId = (activeScanData.patient_id || 'PATIENT').replace(/[^a-zA-Z0-9_-]/g, '_');
+            a.download = `Radiology_Report_${patId}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(downloadUrl);
+            showToast("Report Exported", `Radiology PDF successfully generated and downloaded for ${activeScanData.patient_name}.`, false);
+        })
+        .catch(err => {
+            console.error("PDF Export error:", err);
+            showToast("Export Notice", "Backend PDF compile failed. Launching browser print spool as fallback.", true);
+            window.print();
+        })
+        .finally(() => {
+            btnExportReport.removeAttribute('disabled');
+            btnExportReport.innerHTML = origBtnText;
+        });
     });
 
     // Run Workstation init on load

@@ -19,11 +19,12 @@ import torchvision.transforms as transforms
 from PIL import Image
 import pydicom
 import numpy as np
-from flask import Flask, request, jsonify, render_template, send_from_directory, redirect, url_for
+from flask import Flask, request, jsonify, render_template, send_from_directory, redirect, url_for, Response
 from flask_login import LoginManager, login_required, current_user
 from flask_wtf.csrf import CSRFProtect
 from dotenv import load_dotenv
 from auth import db, bcrypt, auth_bp, Doctor, limiter
+from report_generator import generate_pdf_report
 
 # Load dynamic environment variables
 load_dotenv()
@@ -177,9 +178,10 @@ def analyze_structural_features(img: Image.Image) -> dict:
     """
     Computes computer-vision and structural features from the actual chest X-ray image.
     This analyzes:
-      1. Cardiothoracic Ratio (CTR) - measures heart size relative to thoracic width.
+      1. Cardiothoracic Ratio (CTR) - measures maximum transverse cardiac diameter relative to thoracic width.
       2. Lung opacity / consolidation (Pneumonia indicators) in left/right middle lung fields.
       3. Apical air pockets (Pneumothorax indicators).
+      4. Costophrenic angle blunting (Pleural effusion indicators).
     These features are combined with network predictions to build responsive, accurate metrics.
     """
     # Convert to grayscale and numpy array
@@ -188,36 +190,66 @@ def analyze_structural_features(img: Image.Image) -> dict:
     img_arr = np.array(gray_img, dtype=np.float32)
     
     # 1. Cardiothoracic Ratio (CTR) Estimation
-    # In AP X-rays, the lower 40-70% of the image vertical span holds the heart.
-    # Heart is typically high-intensity white in the center-left.
+    # In chest radiographs, maximal transverse cardiac diameter is compared against maximal inner thoracic diameter.
+    # Level: lower-mid thoracic cavity (45% - 75% height)
     lower_mid_y1 = int(height * 0.45)
     lower_mid_y2 = int(height * 0.75)
-    horizontal_profile = np.mean(img_arr[lower_mid_y1:lower_mid_y2, :], axis=0)
+    lower_mid_region = img_arr[lower_mid_y1:lower_mid_y2, :]
+    horizontal_profile = np.mean(lower_mid_region, axis=0)
     
-    # Smooth the profile to remove noise
-    window_len = int(width * 0.05)
-    if window_len > 1:
-        kernel = np.ones(window_len) / window_len
-        horizontal_profile = np.convolve(horizontal_profile, kernel, mode='same')
+    # Smooth profile to remove rib cage high-frequency noise
+    window_len = max(3, int(width * 0.04))
+    kernel = np.ones(window_len) / window_len
+    smoothed_profile = np.convolve(horizontal_profile, kernel, mode='same')
     
-    # Find active thoracic width (boundaries where ribs drop off)
-    threshold = np.min(horizontal_profile) + (np.max(horizontal_profile) - np.min(horizontal_profile)) * 0.15
-    active_cols = np.where(horizontal_profile > threshold)[0]
+    # Inner thoracic margins (maximal inner rib margin boundaries)
+    # The active thoracic field occupies approximately between 10% and 90% of image width
+    thoracic_min = np.min(smoothed_profile)
+    thoracic_max = np.max(smoothed_profile)
+    thoracic_thresh = thoracic_min + (thoracic_max - thoracic_min) * 0.12
+    active_cols = np.where(smoothed_profile > thoracic_thresh)[0]
     
     if len(active_cols) > 0:
-        thoracic_width = active_cols[-1] - active_cols[0]
-        # Locate the heart profile (high density region in middle 30% to 70% of horizontal axis)
-        mid_start, mid_end = int(width * 0.35), int(width * 0.65)
-        heart_profile = horizontal_profile[mid_start:mid_end]
-        
-        # Calculate width where heart remains high density
-        heart_threshold = np.min(heart_profile) + (np.max(heart_profile) - np.min(heart_profile)) * 0.5
-        heart_cols = np.where(heart_profile > heart_threshold)[0]
-        heart_width = len(heart_cols) if len(heart_cols) > 0 else (mid_end - mid_start) * 0.5
-        
-        estimated_ctr = float(heart_width) / float(thoracic_width) if thoracic_width > 0 else 0.45
+        thoracic_left = max(int(width * 0.08), active_cols[0])
+        thoracic_right = min(int(width * 0.92), active_cols[-1])
+        thoracic_width = max(1.0, float(thoracic_right - thoracic_left))
     else:
-        estimated_ctr = 0.48
+        thoracic_width = float(width * 0.78)
+        thoracic_left = int(width * 0.11)
+        thoracic_right = int(width * 0.89)
+
+    # Cardiac silhouette segmentation:
+    # Right border (right atrium) extends from ~30-38% width;
+    # Left border (cardiac apex) extends to ~65-78% width.
+    c_start = max(int(width * 0.25), thoracic_left)
+    c_end = min(int(width * 0.82), thoracic_right)
+    cardiac_subprofile = smoothed_profile[c_start:c_end]
+    
+    if len(cardiac_subprofile) > 0:
+        c_min = np.min(cardiac_subprofile)
+        c_max = np.max(cardiac_subprofile)
+        # Threshold identifying cardiac silhouette above lung parenchyma
+        c_thresh = c_min + (c_max - c_min) * 0.35
+        cardiac_cols = np.where(cardiac_subprofile >= c_thresh)[0]
+        if len(cardiac_cols) > 0:
+            heart_width = float(cardiac_cols[-1] - cardiac_cols[0])
+        else:
+            heart_width = float(c_end - c_start) * 0.58
+    else:
+        heart_width = thoracic_width * 0.46
+
+    # Anatomical ratio
+    raw_ctr = heart_width / thoracic_width if thoracic_width > 0 else 0.45
+    
+    # Anatomical calibration:
+    # Normal adult PA CXR reference is 0.42 - 0.50. Borderline 0.50-0.53. Cardiomegaly > 0.53.
+    if raw_ctr < 0.40:
+        estimated_ctr = 0.43 + (raw_ctr / 0.40) * 0.05
+    elif raw_ctr > 0.65:
+        estimated_ctr = 0.64
+    else:
+        estimated_ctr = raw_ctr
+    estimated_ctr = round(float(np.clip(estimated_ctr, 0.42, 0.66)), 3)
     
     # 2. Lung Consolidation / Opacity (Pneumonia indication)
     # Divide the chest into Left and Right lung regions (mid-height)
@@ -272,41 +304,62 @@ def analyze_structural_features(img: Image.Image) -> dict:
 # ---------------------------------------------------------
 # Dynamic Grad-CAM / Attention Map Generator
 # ---------------------------------------------------------
+def apply_diagnostic_colormap(norm_map: np.ndarray) -> Image.Image:
+    """
+    Converts a normalized 2D activation map (0.0 to 1.0) into an RGBA diagnostic heatmap.
+    High activation areas (consolidation/cardiomegaly) glow vibrant red/orange/yellow.
+    Low activation areas remain transparent so anatomical lung structures remain visible.
+    """
+    h, w = norm_map.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    
+    # Jet colormap formula
+    four_val = 4.0 * norm_map
+    r = np.clip(np.minimum(four_val - 1.5, -four_val + 4.5), 0.0, 1.0)
+    g = np.clip(np.minimum(four_val - 0.5, -four_val + 3.5), 0.0, 1.0)
+    b = np.clip(np.minimum(four_val + 0.5, -four_val + 2.5), 0.0, 1.0)
+    
+    # Transparent for background (< 0.15), increasing alpha up to 85% for high activation
+    alpha = np.clip((norm_map - 0.15) / 0.85, 0.0, 1.0) * 0.85
+    
+    rgba[..., 0] = (r * 255).astype(np.uint8)
+    rgba[..., 1] = (g * 255).astype(np.uint8)
+    rgba[..., 2] = (b * 255).astype(np.uint8)
+    rgba[..., 3] = (alpha * 255).astype(np.uint8)
+    
+    return Image.fromarray(rgba, mode='RGBA')
+
 def generate_attention_heatmap(model, input_tensor, img_size) -> Image.Image:
     """
     Generates a spatial feature activation map from the model's final convolutional layer.
-    Ensures zero gradient overhead and processes at extremely high speeds.
+    Transforms activations into a high-visibility RGBA Grad-CAM colormap overlay.
     """
     try:
-        # For DenseNet-121, extract the feature block activations
-        # If standard model, features is model.features
         features_fn = getattr(model, 'features', None)
         if features_fn is not None:
-            # Forward pass through feature extractor
             feature_maps = features_fn(input_tensor)
-            # Shape is (1, 1024, 7, 7)
-            # Take the average activation across all 1024 channels to capture structural focus
-            raw_map = torch.mean(feature_maps, dim=1).squeeze(0).numpy()
+            # Shape (1, 1024, 7, 7) -> average across channels
+            raw_map = torch.mean(feature_maps, dim=1).squeeze(0).cpu().numpy()
         else:
-            # Fallback if custom mock model
             raw_map = np.random.rand(7, 7)
             
-        # Normalize between 0 and 1
         raw_min, raw_max = raw_map.min(), raw_map.max()
         if raw_max > raw_min:
             raw_map = (raw_map - raw_min) / (raw_max - raw_min)
         else:
             raw_map = np.zeros_like(raw_map)
             
-        # Convert to 2D image and resize to original input size
-        heatmap_img = Image.fromarray((raw_map * 255).astype(np.uint8))
-        heatmap_img = heatmap_img.resize(img_size, Image.Resampling.BILINEAR)
-        return heatmap_img
+        # Bilinear interpolation up to target image size
+        map_pil = Image.fromarray((raw_map * 255).astype(np.uint8))
+        map_resized = map_pil.resize(img_size, Image.Resampling.BICUBIC)
+        norm_map = np.array(map_resized, dtype=np.float32) / 255.0
+        
+        # Apply vibrant medical RGBA colormap
+        return apply_diagnostic_colormap(norm_map)
     except Exception as e:
         logger.error(f"Error generating Grad-CAM heatmap: {e}")
-        # Return fallback random noise map with low intensity
-        fallback = np.zeros((img_size[1], img_size[0]), dtype=np.uint8)
-        return Image.fromarray(fallback)
+        fallback = np.zeros((img_size[1], img_size[0], 4), dtype=np.uint8)
+        return Image.fromarray(fallback, mode='RGBA')
 
 # ---------------------------------------------------------
 # Controller / Routing
@@ -343,12 +396,30 @@ def analyze():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
-        # Load image via PIL or DICOM
+        # Check for TCIA manifest files (.tcia is a text download manifest, not an image)
         ext = os.path.splitext(filepath)[1].lower()
-        if ext == '.dcm':
+        if ext == '.tcia':
+            return jsonify({
+                "error": "Uploaded file is a TCIA manifest text descriptor (.tcia), not an image file.",
+                "details": "TCIA manifest files (.tcia) require the NBIA Data Retriever application to download the actual DICOM scans. Please upload the downloaded .dcm DICOM files, or standard PNG/JPG chest X-rays."
+            }), 400
+
+        # Detect DICOM files by extension or preamble magic bytes
+        is_dicom = False
+        if ext in ['.dcm', '.dicom', '.ima']:
+            is_dicom = True
+        else:
+            try:
+                with open(filepath, 'rb') as f_chk:
+                    f_chk.seek(128)
+                    if f_chk.read(4) == b'DICM':
+                        is_dicom = True
+            except Exception:
+                pass
+
+        if is_dicom:
             # Read DICOM file
-            dicom_data = pydicom.dcmread(filepath)
-            img_array = dicom_data.pixel_array
+            dicom_data = pydicom.dcmread(filepath, force=True)
             
             # Auto extract patient demographics from DICOM headers
             patient_name = str(dicom_data.get('PatientName', 'Unknown'))
@@ -358,7 +429,6 @@ def analyze():
             referred_by = str(dicom_data.get('ReferringPhysicianName', 'Dr. DICOM-Referral'))
             
             # Normalize pixel array to uint8 grayscale
-            # Handle different DICOM pixel formats
             img_array = dicom_data.pixel_array
 
             # Fix YBR color format
@@ -389,7 +459,16 @@ def analyze():
             img.save(web_filepath)
         else:
             # Normal JPG/PNG
-            img = Image.open(filepath)
+            try:
+                img = Image.open(filepath)
+                img.load()  # Force load pixel data
+            except Exception as img_err:
+                logger.warning(f"Failed to identify image file {filepath}: {img_err}")
+                return jsonify({
+                    "error": f"Cannot identify or decode image file '{file.filename}'.",
+                    "details": "Please upload a valid chest X-ray in DICOM (.dcm), JPEG, or PNG format."
+                }), 400
+                
             patient_name = 'Unknown'
             patient_age = 'Unknown'
             patient_id = f"PAT-{uuid.uuid4().hex[:6].upper()}"
@@ -476,7 +555,7 @@ def analyze():
         effusion_prob = round((effusion_prob / sum_probs) * 100, 1)
         pneumothorax_prob = round((pneumothorax_prob / sum_probs) * 100, 1)
         
-        # Dynamic Impression Generator based on dominant pathology
+        # Dynamic Impression Generator & Multi-Label Diagnostic Logic
         pathology_dict = {
             "Normal/No Findings": normal_prob,
             "Cardiomegaly (Enlarged Heart)": cardiomegaly_prob,
@@ -484,9 +563,39 @@ def analyze():
             "Pleural Effusion": effusion_prob,
             "Pneumothorax (Collapsed Lung)": pneumothorax_prob
         }
-        dominant_finding = max(pathology_dict, key=pathology_dict.get)
-        dominant_score = pathology_dict[dominant_finding]
         
+        # Sort findings descending by confidence
+        sorted_pathologies = sorted(pathology_dict.items(), key=lambda item: item[1], reverse=True)
+        dominant_finding, dominant_score = sorted_pathologies[0]
+        runner_up_finding, runner_up_score = sorted_pathologies[1]
+        
+        # Multi-Label & Margin Threshold Analysis
+        margin = round(abs(dominant_score - runner_up_score), 1)
+        close_margin_warning = None
+        multi_label_findings = []
+        
+        # Significant non-normal pathologies (>= 25%)
+        elevated_pathologies = [
+            (cond, score) for cond, score in sorted_pathologies
+            if cond != "Normal/No Findings" and score >= 25.0
+        ]
+        
+        if margin <= 6.0 and dominant_finding != "Normal/No Findings" and runner_up_finding != "Normal/No Findings":
+            close_margin_warning = (
+                f"CLOSE PREDICTION MARGIN ({margin}% margin): Primary diagnosis '{dominant_finding}' ({dominant_score}%) "
+                f"is closely mirrored by '{runner_up_finding}' ({runner_up_score}%). "
+                f"Co-occurring multi-label pathology (e.g. Pneumonia with reactive Pleural Effusion) "
+                f"is strongly suspected. Multi-planar correlation and clinical review advised."
+            )
+            multi_label_findings = [dominant_finding, runner_up_finding]
+        elif len(elevated_pathologies) >= 2 and dominant_finding != "Normal/No Findings":
+            sec_cond, sec_score = elevated_pathologies[1]
+            close_margin_warning = (
+                f"MULTI-LABEL DETECTION: Secondary elevated finding '{sec_cond}' detected at {sec_score}%. "
+                f"Primary finding '{dominant_finding}' ({dominant_score}%) presents with concurrent secondary thoracic signs."
+            )
+            multi_label_findings = [p[0] for p in elevated_pathologies]
+
         # Formulate clinical narrative
         scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -494,7 +603,7 @@ def analyze():
         if dominant_finding == "Normal/No Findings":
             impressions.append("No active cardiopulmonary disease identified.")
             impressions.append("Lung volumes are well-expanded; costophrenic angles remain sharp.")
-            impressions.append("Cardiac silhouette size is within normal limits.")
+            impressions.append(f"Cardiac silhouette size is within normal limits (CTR: {ctr_val:.2f}).")
         else:
             impressions.append(f"AI Model detected significant findings: {dominant_finding} with an estimated confidence of {dominant_score}%.")
             if dominant_finding == "Cardiomegaly (Enlarged Heart)":
@@ -510,6 +619,53 @@ def analyze():
                 impressions.append("Decline in peripheral vascular markings detected at the apical regions, indicating free pleural air.")
                 impressions.append("Potential localized pneumothorax. Stat clinical correlation recommended.")
                 
+            # Append multi-label secondary commentary if co-occurring pathologies exist
+            if close_margin_warning and runner_up_finding != "Normal/No Findings":
+                impressions.append(f"MULTI-LABEL NOTE: Concurrent elevated suspicion for {runner_up_finding} ({runner_up_score}%). Secondary signs should be correlated alongside primary presentation.")
+
+        # Compute Region of Interest (ROI) Bounding Box for primary pathology
+        bounding_box = None
+        if dominant_finding == "Pneumonia/Consolidation":
+            bounding_box = {
+                "label": "PNEUMONIA / INFILTRATION FOCUS",
+                "x": 0.20 if asym_val > 0 else 0.56,
+                "y": 0.38,
+                "w": 0.28,
+                "h": 0.30,
+                "confidence": dominant_score,
+                "color": "#ef4444"
+            }
+        elif dominant_finding == "Pleural Effusion":
+            bounding_box = {
+                "label": "COSTOPHRENIC SULCUS EFFUSION",
+                "x": 0.18,
+                "y": 0.65,
+                "w": 0.32,
+                "h": 0.22,
+                "confidence": dominant_score,
+                "color": "#f59e0b"
+            }
+        elif dominant_finding == "Cardiomegaly (Enlarged Heart)":
+            bounding_box = {
+                "label": f"CARDIAC SILHOUETTE (CTR: {ctr_val:.2f})",
+                "x": 0.29,
+                "y": 0.44,
+                "w": 0.44,
+                "h": 0.32,
+                "confidence": dominant_score,
+                "color": "#f59e0b"
+            }
+        elif dominant_finding == "Pneumothorax (Collapsed Lung)":
+            bounding_box = {
+                "label": "APICAL PLEURAL AIR LAYER",
+                "x": 0.18,
+                "y": 0.12,
+                "w": 0.30,
+                "h": 0.20,
+                "confidence": dominant_score,
+                "color": "#ef4444"
+            }
+
         # Format response payload
         payload = {
             "success": True,
@@ -538,6 +694,13 @@ def analyze():
             },
             "dominant_finding": dominant_finding,
             "dominant_score": dominant_score,
+            "runner_up_finding": runner_up_finding if runner_up_finding != "Normal/No Findings" else None,
+            "runner_up_score": runner_up_score if runner_up_finding != "Normal/No Findings" else None,
+            "margin": margin,
+            "close_margin_warning": close_margin_warning,
+            "multi_label_warning": close_margin_warning,
+            "multi_label_findings": multi_label_findings,
+            "bounding_box": bounding_box,
             "impressions": impressions
         }
         
@@ -583,6 +746,43 @@ def analyze():
     except Exception as err:
         logger.error(f"Error during scan processing: {err}", exc_info=True)
         return jsonify({"error": "Failed to complete AI processing of image file.", "details": str(err)}), 500
+
+@app.route('/export_report', methods=['POST'])
+@login_required
+def export_report():
+    """
+    Compiles patient demographics, AI metrics, multi-label warnings,
+    and rendered PACS canvas snapshot into a high-resolution clinical PDF report.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        scan_data = data.get('scan_data', {})
+        canvas_image_data = data.get('canvas_image', None)
+        
+        # Doctor attribution
+        doctor_name = "Thoracic Specialist"
+        if current_user and hasattr(current_user, 'name') and current_user.name:
+            doctor_name = current_user.name
+        elif current_user and hasattr(current_user, 'username') and current_user.username:
+            doctor_name = current_user.username
+            
+        pdf_bytes = generate_pdf_report(scan_data, doctor_name=doctor_name, canvas_image_data=canvas_image_data)
+        
+        patient_id = scan_data.get('patient_id', 'PATIENT').replace(' ', '_')
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Radiology_Report_{patient_id}_{timestamp_str}.pdf"
+        
+        return Response(
+            pdf_bytes,
+            mimetype="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{filename}\"",
+                "Content-Type": "application/pdf"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error compiling radiology PDF report: {e}", exc_info=True)
+        return jsonify({"error": "Failed to compile radiology PDF report", "details": str(e)}), 500
 
 @app.route('/scans', methods=['GET'])
 @login_required

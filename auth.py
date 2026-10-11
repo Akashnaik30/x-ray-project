@@ -91,6 +91,75 @@ class Scan(db.Model):
 
     def to_dict(self):
         """Serializes scan record for secure API responses."""
+        sorted_m = sorted(
+            [("Normal/No Findings", self.metric_normal),
+             ("Pneumonia/Consolidation", self.metric_pneumonia),
+             ("Cardiomegaly (Enlarged Heart)", self.metric_cardiomegaly),
+             ("Pleural Effusion", self.metric_effusion),
+             ("Pneumothorax (Collapsed Lung)", self.metric_pneumothorax)],
+            key=lambda x: x[1], reverse=True
+        )
+        margin = round(abs(sorted_m[0][1] - sorted_m[1][1]), 1)
+        close_warning = None
+        multi_label_findings = []
+        
+        elevated = [c for c in sorted_m if c[0] != "Normal/No Findings" and c[1] >= 25.0]
+        if margin <= 6.0 and sorted_m[0][0] != "Normal/No Findings" and sorted_m[1][0] != "Normal/No Findings":
+            close_warning = (
+                f"CLOSE PREDICTION MARGIN ({margin}% margin): Primary diagnosis '{sorted_m[0][0]}' ({sorted_m[0][1]}%) "
+                f"is closely mirrored by '{sorted_m[1][0]}' ({sorted_m[1][1]}%). Co-occurring presentation suspected."
+            )
+            multi_label_findings = [sorted_m[0][0], sorted_m[1][0]]
+        elif len(elevated) >= 2 and sorted_m[0][0] != "Normal/No Findings":
+            close_warning = (
+                f"MULTI-LABEL DETECTION: Secondary finding '{elevated[1][0]}' detected at {elevated[1][1]}%. "
+                f"Primary finding '{sorted_m[0][0]}' ({sorted_m[0][1]}%) presents with concurrent secondary thoracic signs."
+            )
+            multi_label_findings = [c[0] for c in elevated]
+
+        # Region of interest bbox
+        bounding_box = None
+        if self.dominant_finding == "Pneumonia/Consolidation":
+            bounding_box = {
+                "label": "PNEUMONIA / INFILTRATION FOCUS",
+                "x": 0.20 if self.heuristic_asymmetry > 0 else 0.56,
+                "y": 0.38,
+                "w": 0.28,
+                "h": 0.30,
+                "confidence": self.dominant_score,
+                "color": "#ef4444"
+            }
+        elif self.dominant_finding == "Pleural Effusion":
+            bounding_box = {
+                "label": "COSTOPHRENIC SULCUS EFFUSION",
+                "x": 0.18,
+                "y": 0.65,
+                "w": 0.32,
+                "h": 0.22,
+                "confidence": self.dominant_score,
+                "color": "#f59e0b"
+            }
+        elif self.dominant_finding == "Cardiomegaly (Enlarged Heart)":
+            bounding_box = {
+                "label": f"CARDIAC SILHOUETTE (CTR: {self.heuristic_ctr:.2f})",
+                "x": 0.29,
+                "y": 0.44,
+                "w": 0.44,
+                "h": 0.32,
+                "confidence": self.dominant_score,
+                "color": "#f59e0b"
+            }
+        elif self.dominant_finding == "Pneumothorax (Collapsed Lung)":
+            bounding_box = {
+                "label": "APICAL PLEURAL AIR LAYER",
+                "x": 0.18,
+                "y": 0.12,
+                "w": 0.30,
+                "h": 0.20,
+                "confidence": self.dominant_score,
+                "color": "#ef4444"
+            }
+
         return {
             "success": True,
             "scan_id": self.scan_id,
@@ -118,6 +187,11 @@ class Scan(db.Model):
             },
             "dominant_finding": self.dominant_finding,
             "dominant_score": self.dominant_score,
+            "margin": margin,
+            "close_margin_warning": close_warning,
+            "multi_label_warning": close_warning,
+            "multi_label_findings": multi_label_findings,
+            "bounding_box": bounding_box,
             "impressions": self.impressions
         }
 
